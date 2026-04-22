@@ -4,12 +4,15 @@ import { useToast } from '../../context/ToastContext';
 import {
   getGroups, createGroup, getFriendships, sendFriendRequest,
   respondToFriendRequest, searchUsers, getGroupMessages,
-  sendGroupMessage, getGroupActivity, getGlobalLeaderboard
+  sendGroupMessage, getGroupActivity, getGlobalLeaderboard,
+  getGroupMaterials, shareMaterialToGroup, getMyMaterials,
+  getMaterialPublicUrl
 } from '../../services/db';
 import { supabase } from '../../supabaseClient';
 import { 
   Users, UserPlus, MessageSquare, Trophy, Plus, 
-  Search, Check, X, Send, BarChart2, Shield
+  Search, Check, X, Send, BarChart2, Shield,
+  FileText, Link as LinkIcon, Download, Pin, FolderOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -124,6 +127,103 @@ function ChatWindow({ group, userId }) {
 }
 
 /* ── Group Activity Tab ── */
+/* ── Group Resources Tab ── */
+function GroupResources({ group, userId }) {
+  const [materials, setMaterials] = useState([]);
+  const [myDocs, setMyDocs] = useState([]);
+  const [showShare, setShowShare] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const { show } = useToast();
+
+  const load = useCallback(async () => {
+    const [{ data: gMat }, { data: pMat }] = await Promise.all([
+      getGroupMaterials(group.id),
+      getMyMaterials(userId)
+    ]);
+    setMaterials(gMat || []);
+    setMyDocs(pMat || []);
+    setLoading(false);
+  }, [group.id, userId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleShare = async (matId) => {
+    const { error } = await shareMaterialToGroup(matId, group.id);
+    if (!error) {
+      show('Resource pinned to group!', 'success');
+      setShowShare(false);
+      load();
+    }
+  };
+
+  return (
+    <div className="card" style={{ height: '500px', display: 'flex', flexDirection: 'column', padding: 0 }}>
+      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <FileText size={16} color="var(--sky)" /> Learning Resources
+        </h4>
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowShare(true)} style={{ color: 'var(--sky)', fontSize: 11, fontWeight: 700 }}>
+          <Pin size={12} /> Share Mine
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+        {loading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: 20 }}><div className="spinner" /></div>
+        ) : materials.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-dim)' }}>
+            <FolderOpen size={48} style={{ opacity: 0.1, marginBottom: 12 }} />
+            <p style={{ fontSize: 13 }}>Collaborate by pinning PDFs or links here.</p>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            {materials.map(m => (
+              <div key={m.id} style={{ padding: 12, borderRadius: 12, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                   {m.type === 'pdf' ? <FileText size={14} color="var(--sky)" /> : <LinkIcon size={14} color="var(--mint)" />}
+                   <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.title}</span>
+                 </div>
+                 <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 10 }}>Pinned by {m.owner?.name}</div>
+                 <a 
+                   href={m.type === 'pdf' ? getMaterialPublicUrl(m.file_path) : m.url} 
+                   target="_blank" rel="noreferrer"
+                   className="btn btn-ghost btn-sm" 
+                   style={{ width: '100%', fontSize: 10, background: 'var(--surface)', border: '1px solid var(--border)' }}
+                 >
+                   Open
+                 </a>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {showShare && (
+        <div className="modal-overlay" onClick={() => setShowShare(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 400 }}>
+            <h3 style={{ marginBottom: 20 }}>Pin Resource to Group</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 300, overflowY: 'auto' }}>
+              {myDocs.filter(d => d.group_id !== group.id).map(d => (
+                <button 
+                  key={d.id} 
+                  className="btn btn-ghost" 
+                  style={{ justifyContent: 'flex-start', padding: '10px 16px', border: '1px solid var(--border)', borderRadius: 10 }}
+                  onClick={() => handleSearch(d.id)} // Reuse logic check: wait, I need a share handler
+                  onClick={() => handleShare(d.id)}
+                >
+                  {d.type === 'pdf' ? <FileText size={14} /> : <LinkIcon size={14} />}
+                  <span style={{ marginLeft: 10 }}>{d.title}</span>
+                </button>
+              ))}
+              {myDocs.length === 0 && <p style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 13 }}>No materials in your library yet.</p>}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GroupActivity({ group }) {
   const [activity, setActivity] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -175,6 +275,7 @@ export default function SocialPage() {
   const { user, profile } = useAuth();
   const { show } = useToast();
   const [activeTab, setActiveTab] = useState('groups');
+  const [groupTab, setGroupTab] = useState('chat'); // chat | stats | resources
   const [groups, setGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState(null);
   
@@ -200,6 +301,14 @@ export default function SocialPage() {
   }, [user, selectedGroup]);
 
   useEffect(() => { loadSocial(); }, [loadSocial]);
+
+  const handleRespondToFriendRequest = async (id, status) => {
+    const { error } = await respondToFriendRequest(id, status);
+    if (!error) {
+      show(status === 'accepted' ? 'Partner added!' : 'Request handled');
+      loadSocial();
+    }
+  };
 
   const handleSearch = async (val) => {
     setSearchQuery(val);
@@ -241,22 +350,19 @@ export default function SocialPage() {
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 24, borderBottom: '1px solid var(--border)', marginBottom: 32 }}>
         {[
-          { id: 'groups', label: 'Groups', icon: Users },
-          { id: 'friends', label: 'Partners', icon: UserPlus },
-          { id: 'leaderboard', label: 'Rankings', icon: Trophy }
+          { id: 'groups', label: 'Study Groups', icon: Users },
+          { id: 'friends', label: 'Study Partners', icon: UserPlus },
+          { id: 'leaderboard', label: 'Global Ranking', icon: Trophy }
         ].map(t => (
           <button 
             key={t.id}
             className={`btn-tab ${activeTab === t.id ? 'active' : ''}`}
             onClick={() => setActiveTab(t.id)}
             style={{ 
-              background: 'none', border: 'none', padding: '12px 4px', 
-              color: activeTab === t.id ? 'var(--sky)' : 'var(--text-dim)',
-              borderBottom: activeTab === t.id ? '2px solid var(--sky)' : '2px solid transparent',
-              display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
-              fontWeight: activeTab === t.id ? 600 : 400,
-              fontSize: 14,
-              transition: 'var(--transition)'
+               paddingBottom: 16, borderBottom: activeTab === t.id ? '2px solid var(--sky)' : 'none',
+               color: activeTab === t.id ? 'var(--sky)' : 'var(--text-dim)',
+               display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600,
+               background: 'none', border: 'none', cursor: 'pointer', fontSize: 14
             }}
           >
             <t.icon size={16} /> {t.label}
@@ -268,52 +374,73 @@ export default function SocialPage() {
       <AnimatePresence mode="wait">
         {activeTab === 'groups' && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} key="groups">
-            <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr 340px', gap: 24 }}>
-              {/* Group Sidebar */}
-              <div className="card" style={{ padding: '20px', border: '1px solid var(--border)', background: 'var(--surface)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-                  <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Communities</h4>
-                  <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setIsCreatingGroup(true)} style={{ background: 'var(--surface-2)' }}>
-                    <Plus size={16} />
-                  </button>
-                </div>
-                
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {groups.length === 0 ? (
-                    <p style={{ fontSize: 12, color: 'var(--text-dim)', textAlign: 'center', padding: 20 }}>No groups yet.</p>
-                  ) : (
-                    groups.map(g => (
-                      <button 
-                        key={g.id}
-                        onClick={() => setSelectedGroup(g)}
-                        style={{
-                          width: '100%', textAlign: 'left', padding: '10px 14px', borderRadius: 10,
-                          background: selectedGroup?.id === g.id ? 'var(--sky-dim)' : 'transparent',
-                          border: 'none', color: selectedGroup?.id === g.id ? 'var(--sky)' : 'var(--text)',
-                          display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
-                          transition: 'var(--transition)', fontWeight: selectedGroup?.id === g.id ? 600 : 500, fontSize: 13
-                        }}
-                      >
-                        <div style={{ width: 6, height: 6, borderRadius: '50%', background: selectedGroup?.id === g.id ? 'var(--sky)' : 'var(--border-2)' }} />
-                        <span>{g.name}</span>
-                      </button>
-                    ))
-                  )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(250px, 320px) 1fr', gap: 28 }}>
+              {/* Groups Sidebar */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                <div className="card" style={{ padding: 24 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>My Groups</h3>
+                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setIsCreatingGroup(true)} style={{ background: 'var(--sky-dim)', color: 'var(--sky)' }}>
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {groups.length === 0 ? (
+                      <p style={{ fontSize: 12, color: 'var(--text-dim)', textAlign: 'center', padding: 20 }}>No groups joined yet.</p>
+                    ) : (
+                      groups.map(g => (
+                        <button 
+                          key={g.id} 
+                          className={`btn-ghost ${selectedGroup?.id === g.id ? 'active' : ''}`}
+                          onClick={() => { setSelectedGroup(g); setGroupTab('chat'); }}
+                          style={{ 
+                            justifyContent: 'flex-start', padding: '12px 16px', borderRadius: 12,
+                            background: selectedGroup?.id === g.id ? 'var(--sky-dim)' : 'transparent',
+                            color: selectedGroup?.id === g.id ? 'var(--sky)' : 'var(--text)',
+                            border: 'none', textAlign: 'left', display: 'flex', gap: 12, width: '100%'
+                          }}
+                        >
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: selectedGroup?.id === g.id ? 'var(--sky)' : 'var(--border)', marginTop: 6 }} />
+                          <span style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{g.name}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {/* Chat & Activity */}
-              {selectedGroup ? (
-                <>
-                  <ChatWindow group={selectedGroup} userId={user.id} />
-                  <GroupActivity group={selectedGroup} />
-                </>
-              ) : (
-                <div className="card" style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', border: '1px dashed var(--border)', background: 'transparent' }}>
-                  <Users size={48} style={{ opacity: 0.1, marginBottom: 16 }} />
-                  <p style={{ fontSize: 14 }}>Select a community to begin</p>
-                </div>
-              )}
+              {/* Main Group Content */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                {selectedGroup ? (
+                  <>
+                    <div style={{ display: 'flex', background: 'var(--surface-2)', padding: 6, borderRadius: 16, border: '1px solid var(--border)', gap: 8 }}>
+                      {[
+                        { id: 'chat', label: 'Chat', icon: MessageSquare },
+                        { id: 'stats', label: 'Stats', icon: BarChart2 },
+                        { id: 'resources', label: 'Resources', icon: FileText }
+                      ].map(st => (
+                        <button 
+                          key={st.id}
+                          className={`btn btn-sm ${groupTab === st.id ? 'btn-primary' : 'btn-ghost'}`}
+                          onClick={() => setGroupTab(st.id)}
+                          style={{ flex: 1, borderRadius: 12, fontSize: 12, height: 40 }}
+                        >
+                          <st.icon size={14} /> {st.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {groupTab === 'chat' && <ChatWindow group={selectedGroup} userId={user.id} />}
+                    {groupTab === 'stats' && <GroupActivity group={selectedGroup} />}
+                    {groupTab === 'resources' && <GroupResources group={selectedGroup} userId={user.id} />}
+                  </>
+                ) : (
+                  <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', border: '1px dashed var(--border)', background: 'transparent', minHeight: 450 }}>
+                    <Users size={48} style={{ opacity: 0.1, marginBottom: 16 }} />
+                    <p style={{ fontSize: 14 }}>Select a study community to begin collaborating</p>
+                  </div>
+                )}
+              </div>
             </div>
           </motion.div>
         )}
@@ -383,10 +510,10 @@ export default function SocialPage() {
                           
                           {!isSender && f.status === 'pending' && (
                             <div style={{ display: 'flex', gap: 6 }}>
-                              <button className="btn btn-ghost btn-icon btn-sm" style={{ color: 'var(--green)', background: 'var(--green-dim)', border: 'none' }} onClick={() => respondToFriendRequest(f.id, 'accepted')}>
+                              <button className="btn btn-ghost btn-icon btn-sm" style={{ color: 'var(--green)', background: 'var(--green-dim)', border: 'none' }} onClick={() => handleRespondToFriendRequest(f.id, 'accepted')}>
                                 <Check size={16} />
                               </button>
-                              <button className="btn btn-ghost btn-icon btn-sm" style={{ color: 'var(--red)', background: 'var(--red-dim)', border: 'none' }} onClick={() => respondToFriendRequest(f.id, 'blocked')}>
+                              <button className="btn btn-ghost btn-icon btn-sm" style={{ color: 'var(--red)', background: 'var(--red-dim)', border: 'none' }} onClick={() => handleRespondToFriendRequest(f.id, 'rejected')}>
                                 <X size={16} />
                               </button>
                             </div>

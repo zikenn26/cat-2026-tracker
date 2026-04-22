@@ -522,6 +522,27 @@ export const deleteMaterial = async (materialId, filePath = null) => {
   }
   return supabase.from('study_materials').delete().eq('id', materialId);
 };
+// 9. Fetch Group Materials
+export const getGroupMaterials = async (groupId) => {
+  const { data, error } = await supabase
+    .from('study_materials')
+    .select(`
+      *,
+      owner:user_id(id, name)
+    `)
+    .eq('group_id', groupId)
+    .order('created_at', { ascending: false });
+  return { data: data || [], error };
+};
+
+// 10. Share Material to Group (Update existing record)
+export const shareMaterialToGroup = async (materialId, groupId) => {
+  const { data, error } = await supabase
+    .from('study_materials')
+    .update({ group_id: groupId })
+    .eq('id', materialId);
+  return { data, error };
+};
 
 
 
