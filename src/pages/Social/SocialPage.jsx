@@ -300,7 +300,39 @@ export default function SocialPage() {
     }
   }, [user, selectedGroup]);
 
-  useEffect(() => { loadSocial(); }, [loadSocial]);
+  useEffect(() => { 
+    loadSocial(); 
+    if (!user) return;
+    
+    // Subscribe to realtime changes for friendships
+    const channel = supabase
+      .channel('public:friendships')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'friendships',
+        filter: `friend_id=eq.${user.id}`
+      }, (payload) => {
+        loadSocial();
+        if (payload.eventType === 'INSERT') {
+          show('New friend request received!', 'success');
+        }
+      })
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'friendships',
+        filter: `user_id=eq.${user.id}`
+      }, (payload) => {
+        loadSocial();
+        if (payload.eventType === 'UPDATE' && payload.new.status === 'accepted') {
+          show('Friend request accepted!', 'success');
+        }
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [loadSocial, user, show]);
 
   const handleRespondToFriendRequest = async (id, status) => {
     const { error } = await respondToFriendRequest(id, status);
@@ -319,12 +351,16 @@ export default function SocialPage() {
   };
 
   const handleSendFriendRequest = async (friendId) => {
+    console.log("Sending request to:", friendId);
     const { error } = await sendFriendRequest(user.id, friendId);
     if (!error) {
       show('Friend request sent!', 'success');
       loadSocial();
       setSearchResults([]);
       setSearchQuery('');
+    } else {
+      console.error("Friend request error:", error);
+      show(`Failed to send request: ${error.message}`, 'error');
     }
   };
 
