@@ -303,6 +303,15 @@ export const createGroup = async (name, description, userId) => {
   return { data: group, error: null };
 };
 
+export const addGroupMember = async (groupId, userId, role = 'member') => {
+  const { data, error } = await supabase
+    .from('group_members')
+    .insert({ group_id: groupId, user_id: userId, role })
+    .select()
+    .single();
+  return { data, error };
+};
+
 export const getGroupMessages = async (groupId) => {
   const { data, error } = await supabase
     .from('group_messages')

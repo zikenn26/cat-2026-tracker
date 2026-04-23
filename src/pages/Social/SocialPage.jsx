@@ -6,7 +6,7 @@ import {
   respondToFriendRequest, searchUsers, getGroupMessages,
   sendGroupMessage, getGroupActivity, getGlobalLeaderboard,
   getGroupMaterials, shareMaterialToGroup, getMyMaterials,
-  getMaterialPublicUrl
+  getMaterialPublicUrl, addGroupMember
 } from '../../services/db';
 import { supabase } from '../../supabaseClient';
 import { 
@@ -284,6 +284,7 @@ export default function SocialPage() {
   const [searchResults, setSearchResults] = useState([]);
   
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+  const [isInvitingToGroup, setIsInvitingToGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupDesc, setNewGroupDesc] = useState('');
 
@@ -348,6 +349,24 @@ export default function SocialPage() {
     const { data } = await searchUsers(val);
     // Filter out self
     setSearchResults(data.filter(u => u.id !== user.id));
+  };
+
+  const handleInviteToGroup = async (friendId) => {
+    if (!selectedGroup) return;
+    const { error } = await addGroupMember(selectedGroup.id, friendId, 'member');
+    if (!error) {
+      show('Partner invited to group!', 'success');
+      setIsInvitingToGroup(false);
+      // Optional: reload group members if you want it strictly synchronized.
+      // But the chat/resources tabs will naturally have access for them now.
+    } else {
+      console.error(error);
+      if (error.code === '23505') { // Postgres duplicate key error code
+         show('Partner is already in this group!', 'error');
+      } else {
+         show('Could not add partner to group.', 'error');
+      }
+    }
   };
 
   const handleSendFriendRequest = async (friendId) => {
@@ -450,25 +469,65 @@ export default function SocialPage() {
                 {selectedGroup ? (
                   <>
                     <div style={{ display: 'flex', background: 'var(--surface-2)', padding: 6, borderRadius: 16, border: '1px solid var(--border)', gap: 8 }}>
-                      {[
-                        { id: 'chat', label: 'Chat', icon: MessageSquare },
-                        { id: 'stats', label: 'Stats', icon: BarChart2 },
-                        { id: 'resources', label: 'Resources', icon: FileText }
-                      ].map(st => (
-                        <button 
-                          key={st.id}
-                          className={`btn btn-sm ${groupTab === st.id ? 'btn-primary' : 'btn-ghost'}`}
-                          onClick={() => setGroupTab(st.id)}
-                          style={{ flex: 1, borderRadius: 12, fontSize: 12, height: 40 }}
-                        >
-                          <st.icon size={14} /> {st.label}
-                        </button>
-                      ))}
+                      <div style={{ display: 'flex', gap: 8, flex: 1 }}>
+                        {[
+                          { id: 'chat', label: 'Chat', icon: MessageSquare },
+                          { id: 'stats', label: 'Stats', icon: BarChart2 },
+                          { id: 'resources', label: 'Resources', icon: FileText }
+                        ].map(st => (
+                          <button 
+                            key={st.id}
+                            className={`btn btn-sm ${groupTab === st.id ? 'btn-primary' : 'btn-ghost'}`}
+                            onClick={() => setGroupTab(st.id)}
+                            style={{ flex: 1, borderRadius: 12, fontSize: 12, height: 40 }}
+                          >
+                            <st.icon size={14} /> {st.label}
+                          </button>
+                        ))}
+                      </div>
+                      <button 
+                         className="btn btn-sm btn-ghost" 
+                         onClick={() => setIsInvitingToGroup(true)}
+                         style={{ color: 'var(--cyan)', border: '1px solid var(--cyan-dim)', borderRadius: 12, height: 40, padding: '0 16px' }}
+                      >
+                        <UserPlus size={14} /> Invite
+                      </button>
                     </div>
 
                     {groupTab === 'chat' && <ChatWindow group={selectedGroup} userId={user.id} />}
                     {groupTab === 'stats' && <GroupActivity group={selectedGroup} />}
                     {groupTab === 'resources' && <GroupResources group={selectedGroup} userId={user.id} />}
+                    
+                    {/* Invite Friend to Group Modal */}
+                    {isInvitingToGroup && (
+                      <div className="modal-overlay" onClick={() => setIsInvitingToGroup(false)}>
+                        <div className="modal fade-in" onClick={e => e.stopPropagation()} style={{ maxWidth: 400, padding: 24, borderRadius: 16 }}>
+                          <h3 style={{ marginBottom: 20, fontSize: 16 }}>Invite Partner to {selectedGroup.name}</h3>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 300, overflowY: 'auto' }}>
+                            {friendships.filter(f => f.status === 'accepted').length === 0 ? (
+                              <p style={{ fontSize: 13, color: 'var(--text-dim)', textAlign: 'center' }}>You have no partners to invite. Add some first!</p>
+                            ) : (
+                              friendships.filter(f => f.status === 'accepted').map(f => {
+                                const friend = f.user_id === user.id ? f.receiver : f.sender;
+                                return (
+                                  <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', background: 'var(--surface-2)', borderRadius: 12 }}>
+                                    <span style={{ fontSize: 13, fontWeight: 600 }}>{friend?.name}</span>
+                                    <button 
+                                      className="btn btn-sm btn-primary"
+                                      onClick={() => handleInviteToGroup(friend.id)}
+                                      style={{ height: 32, fontSize: 11 }}
+                                    >
+                                      Invite
+                                    </button>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                          <button className="btn btn-ghost" style={{ width: '100%', marginTop: 16 }} onClick={() => setIsInvitingToGroup(false)}>Close</button>
+                        </div>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', border: '1px dashed var(--border)', background: 'transparent', minHeight: 450 }}>
