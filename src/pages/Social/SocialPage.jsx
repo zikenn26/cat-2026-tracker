@@ -335,10 +335,19 @@ export default function SocialPage() {
     return () => { supabase.removeChannel(channel); };
   }, [loadSocial, user, show]);
 
-  const handleRespondToFriendRequest = async (id, status) => {
+  const handleRespondToFriendRequest = async (id, status, friendId, friendName) => {
     const { error } = await respondToFriendRequest(id, status);
     if (!error) {
-      show(status === 'accepted' ? 'Partner added!' : 'Request handled');
+      if (status === 'accepted' && friendId) {
+        show('Partner added! Creating shared space...', 'success');
+        const gName = `Study: ${profile?.name || 'You'} & ${friendName || 'Partner'}`;
+        const { data: newG, error: gErr } = await createGroup(gName, 'Direct connection for chat and resources', user.id);
+        if (!gErr && newG) {
+           await addGroupMember(newG.id, friendId, 'member');
+        }
+      } else {
+        show('Request rejected');
+      }
       loadSocial();
     }
   };
@@ -605,7 +614,7 @@ export default function SocialPage() {
                           
                           {!isSender && f.status === 'pending' && (
                             <div style={{ display: 'flex', gap: 6 }}>
-                              <button className="btn btn-ghost btn-icon btn-sm" style={{ color: 'var(--green)', background: 'var(--green-dim)', border: 'none' }} onClick={() => handleRespondToFriendRequest(f.id, 'accepted')}>
+                              <button className="btn btn-ghost btn-icon btn-sm" style={{ color: 'var(--green)', background: 'var(--green-dim)', border: 'none' }} onClick={() => handleRespondToFriendRequest(f.id, 'accepted', friend?.id, friend?.name)}>
                                 <Check size={16} />
                               </button>
                               <button className="btn btn-ghost btn-icon btn-sm" style={{ color: 'var(--red)', background: 'var(--red-dim)', border: 'none' }} onClick={() => handleRespondToFriendRequest(f.id, 'rejected')}>
