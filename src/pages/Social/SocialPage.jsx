@@ -19,28 +19,35 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 
 /* ─────────────────────────────────────────────────────────
-   CHAT WINDOW
-   Uses Supabase Broadcast for instant delivery + postgres_changes
-   as a fallback, ensuring zero missed messages.
+   CHAT WINDOW — Stable realtime channel
+   Root bug fix: name cache moved to useRef so it never 
+   triggers re-renders. Stable resolveName/appendMsg means
+   the channel subscription NEVER tears down mid-chat.
 ───────────────────────────────────────────────────────── */
 function ChatWindow({ group, userId, onNewMessage }) {
   const [messages, setMessages] = useState([]);
-  const [names, setNames] = useState({});     // uid → name cache
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
-  const bottomRef = useRef();
-  const channelRef = useRef(null);
 
-  /* Fetch missing name for a uid */
+  // ⚡ KEY FIX: ref instead of state → zero re-renders from name lookups
+  const nameCacheRef = useRef({});
+  const channelRef = useRef(null);
+  const onNewMessageRef = useRef(onNewMessage);
+  const bottomRef = useRef();
+
+  // Keep onNewMessage ref current without adding it to effect deps
+  useEffect(() => { onNewMessageRef.current = onNewMessage; }, [onNewMessage]);
+
+  // Stable name resolver — never recreated
   const resolveName = useCallback(async (uid) => {
-    if (names[uid]) return names[uid];
+    if (nameCacheRef.current[uid]) return nameCacheRef.current[uid];
     const { data } = await supabase.from('profiles').select('name').eq('id', uid).single();
     const name = data?.name || 'User';
-    setNames(prev => ({ ...prev, [uid]: name }));
+    nameCacheRef.current[uid] = name;
     return name;
-  }, [names]);
+  }, []); // no dependencies → truly stable
 
-  /* Append an incoming message, resolving the sender's name */
+  // Stable message appender — only depends on stable resolveName
   const appendMsg = useCallback(async (raw) => {
     const name = await resolveName(raw.user_id);
     const enriched = { ...raw, user: { id: raw.user_id, name } };
@@ -48,14 +55,15 @@ function ChatWindow({ group, userId, onNewMessage }) {
       if (prev.some(m => m.id === enriched.id)) return prev;
       return [...prev, enriched];
     });
-    if (onNewMessage) onNewMessage(group.id, raw.user_id);
-  }, [resolveName, group.id, onNewMessage]);
+    onNewMessageRef.current?.(group.id, raw.user_id);
+  }, [resolveName, group.id]); // group.id is stable for lifetime of this mount
 
-  /* Initial load */
+  // Initial message load
   useEffect(() => {
     let active = true;
     setLoading(true);
     setMessages([]);
+    nameCacheRef.current = {};
 
     supabase
       .from('group_messages')
@@ -65,79 +73,99 @@ function ChatWindow({ group, userId, onNewMessage }) {
       .then(({ data }) => {
         if (!active) return;
         const rows = data || [];
+        // Pre-fill name cache from loaded messages
+        rows.forEach(m => { if (m.user?.id) nameCacheRef.current[m.user.id] = m.user.name; });
         setMessages(rows);
-        const cache = {};
-        rows.forEach(m => { if (m.user?.id) cache[m.user.id] = m.user.name; });
-        setNames(cache);
         setLoading(false);
-        // Mark as read when opening
         markGroupRead(group.id, userId);
       });
 
     return () => { active = false; };
   }, [group.id, userId]);
 
-  /* Realtime subscription — uses BOTH broadcast and postgres_changes */
+  // ⚡ Single stable channel — only recreated if group changes
+  // appendMsg is stable (no changing deps), so this never accidentally re-runs
   useEffect(() => {
-    // Remove old channel before creating new one
     if (channelRef.current) {
       supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
     }
 
     const channel = supabase
-      .channel(`room:${group.id}`, { config: { broadcast: { self: false } } })
-      // Broadcast — instant delivery between live clients
-      .on('broadcast', { event: 'message' }, ({ payload }) => {
-        appendMsg(payload);
+      .channel(`chat-${group.id}`, {
+        config: { broadcast: { self: false }, presence: { key: userId } }
       })
-      // postgres_changes — catches messages from offline sessions / other tabs
+      // Real-time postgres changes (works for all sessions including browser restores)
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
         table: 'group_messages',
         filter: `group_id=eq.${group.id}`
       }, ({ new: raw }) => {
-        // Only append from postgres if not from self (self gets optimistic)
-        if (raw.user_id !== userId) {
-          appendMsg(raw);
-        }
+        // Skip own messages — handled by optimistic update
+        if (raw.user_id === userId) return;
+        appendMsg(raw);
       })
-      .subscribe();
+      // Broadcast — near-instant peer delivery (sub 100ms)
+      .on('broadcast', { event: 'msg' }, ({ payload }) => {
+        if (payload?.user_id === userId) return; // Skip own broadcast echo
+        appendMsg(payload);
+      })
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          // Auto-retry on connection error
+          setTimeout(() => channel.subscribe(), 2000);
+        }
+      });
 
     channelRef.current = channel;
-    return () => { supabase.removeChannel(channel); channelRef.current = null; };
-  }, [group.id, userId, appendMsg]);
+    return () => {
+      supabase.removeChannel(channel);
+      channelRef.current = null;
+    };
+  }, [group.id, userId, appendMsg]); // appendMsg is stable → this runs once per group
 
-  /* Auto-scroll */
+  // Auto-scroll on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  /* Send */
   const send = async (e) => {
     e.preventDefault();
-    if (!text.trim()) return;
     const content = text.trim();
+    if (!content) return;
     setText('');
 
-    // 1. Optimistic — show instantly
-    const ts = new Date().toISOString();
-    const optimisticId = `opt-${ts}`;
-    const myName = names[userId] || 'You';
-    const optimistic = { id: optimisticId, group_id: group.id, user_id: userId, content, created_at: ts, user: { id: userId, name: myName } };
+    const myName = nameCacheRef.current[userId] || 'You';
+    const optimisticId = `opt-${Date.now()}`;
+    const optimistic = {
+      id: optimisticId,
+      group_id: group.id,
+      user_id: userId,
+      content,
+      created_at: new Date().toISOString(),
+      user: { id: userId, name: myName }
+    };
+
+    // Show immediately
     setMessages(prev => [...prev, optimistic]);
 
-    // 2. Persist to DB
-    const { data: saved } = await sendGroupMessage(group.id, userId, content);
+    // Persist
+    const { data: saved, error } = await sendGroupMessage(group.id, userId, content);
     if (saved) {
-      // Replace optimistic with real DB row
-      setMessages(prev => prev.map(m => m.id === optimisticId ? { ...saved, user: { id: userId, name: myName } } : m));
-      // 3. Broadcast to others in the room instantly
+      // Swap optimistic for real row
+      setMessages(prev => prev.map(m =>
+        m.id === optimisticId ? { ...saved, user: { id: userId, name: myName } } : m
+      ));
+      // Broadcast to peers for instant delivery
       channelRef.current?.send({
         type: 'broadcast',
-        event: 'message',
-        payload: { ...saved, user_id: saved.user_id }
+        event: 'msg',
+        payload: { ...saved }
       });
+    } else if (error) {
+      // Remove failed optimistic message
+      setMessages(prev => prev.filter(m => m.id !== optimisticId));
     }
   };
 
