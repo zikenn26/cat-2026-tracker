@@ -312,6 +312,55 @@ export const addGroupMember = async (groupId, userId, role = 'member') => {
   return { data, error };
 };
 
+export const leaveGroup = async (groupId, userId) => {
+  const { error } = await supabase
+    .from('group_members')
+    .delete()
+    .eq('group_id', groupId)
+    .eq('user_id', userId);
+  return { error };
+};
+
+export const deleteGroup = async (groupId) => {
+  const { error } = await supabase
+    .from('study_groups')
+    .delete()
+    .eq('id', groupId);
+  return { error };
+};
+
+export const markGroupRead = async (groupId, userId) => {
+  await supabase
+    .from('group_members')
+    .update({ last_read_at: new Date().toISOString() })
+    .eq('group_id', groupId)
+    .eq('user_id', userId);
+};
+
+export const getUnreadCounts = async (userId) => {
+  // Get all groups user belongs to with their last_read_at
+  const { data: memberships } = await supabase
+    .from('group_members')
+    .select('group_id, last_read_at')
+    .eq('user_id', userId);
+
+  if (!memberships?.length) return {};
+
+  const counts = {};
+  await Promise.all(
+    memberships.map(async (m) => {
+      const { count } = await supabase
+        .from('group_messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('group_id', m.group_id)
+        .neq('user_id', userId)
+        .gt('created_at', m.last_read_at || '1970-01-01');
+      counts[m.group_id] = count || 0;
+    })
+  );
+  return counts;
+};
+
 export const getGroupMessages = async (groupId) => {
   const { data, error } = await supabase
     .from('group_messages')
