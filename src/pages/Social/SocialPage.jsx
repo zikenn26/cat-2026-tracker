@@ -112,9 +112,8 @@ function ChatWindow({ group, userId, onNewMessage }) {
         appendMsg(payload);
       })
       .subscribe((status) => {
-        if (status === 'CHANNEL_ERROR') {
-          // Auto-retry on connection error
-          setTimeout(() => channel.subscribe(), 2000);
+        if (status === 'SUBSCRIBED') {
+          console.log('Realtime connected to', group.id);
         }
       });
 
@@ -137,7 +136,7 @@ function ChatWindow({ group, userId, onNewMessage }) {
     setText('');
 
     const myName = nameCacheRef.current[userId] || 'You';
-    const optimisticId = `opt-${Date.now()}`;
+    const optimisticId = `opt-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
     const optimistic = {
       id: optimisticId,
       group_id: group.id,
