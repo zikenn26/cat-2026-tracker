@@ -199,7 +199,7 @@ function ChatWindow({ group, userId, onNewMessage }) {
             return (
               <div key={m.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMine ? 'flex-end' : 'flex-start' }}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3, marginLeft: isMine ? 0 : 4, marginRight: isMine ? 4 : 0 }}>
-                  {isMine ? 'You' : (m.user?.name || names[m.user_id] || 'User')} · {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {isMine ? 'You' : (m.user?.name || nameCacheRef.current[m.user_id] || 'User')} · {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </div>
                 <div style={{
                   maxWidth: '78%',
