@@ -19,38 +19,67 @@ import { motion, AnimatePresence } from 'framer-motion';
 /* ── Chat Component ── */
 function ChatWindow({ group, userId }) {
   const [messages, setMessages] = useState([]);
+  const [nameCache, setNameCache] = useState({});
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
   const scrollRef = useRef();
 
-  const loadMessages = useCallback(async () => {
-    const { data } = await getGroupMessages(group.id);
-    setMessages(data);
-    setLoading(false);
+  // Fetch sender name if not in cache
+  const resolveName = useCallback(async (uid) => {
+    if (nameCache[uid]) return nameCache[uid];
+    const { data } = await supabase.from('profiles').select('name').eq('id', uid).single();
+    const name = data?.name || 'User';
+    setNameCache(prev => ({ ...prev, [uid]: name }));
+    return name;
+  }, [nameCache]);
+
+  // Initial load
+  useEffect(() => {
+    let active = true;
+    supabase
+      .from('group_messages')
+      .select('*, user:user_id(id, name)')
+      .eq('group_id', group.id)
+      .order('created_at', { ascending: true })
+      .then(({ data }) => {
+        if (active) {
+          setMessages(data || []);
+          // Build initial name cache
+          const cache = {};
+          (data || []).forEach(m => { if (m.user?.id) cache[m.user.id] = m.user.name; });
+          setNameCache(cache);
+          setLoading(false);
+        }
+      });
+    return () => { active = false; };
   }, [group.id]);
 
+  // Realtime subscription — append messages directly, no full refetch
   useEffect(() => {
-    loadMessages();
-
-    // Subscribe to new messages
     const channel = supabase
-      .channel(`group_chat_${group.id}`)
-      .on('postgres_changes', { 
-        event: 'INSERT', 
-        schema: 'public', 
+      .channel(`chat:${group.id}:${Date.now()}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
         table: 'group_messages',
         filter: `group_id=eq.${group.id}`
-      }, (payload) => {
-        // Since payload doesn't have the user object (name), 
-        // we might need to refetch or manually handle. 
-        // For simplicity and correctness with names, refetch:
-        loadMessages();
+      }, async (payload) => {
+        const msg = payload.new;
+        // Resolve sender name
+        const name = await resolveName(msg.user_id);
+        const enriched = { ...msg, user: { id: msg.user_id, name } };
+        setMessages(prev => {
+          // Avoid duplicates (optimistic + realtime)
+          if (prev.find(m => m.id === enriched.id)) return prev;
+          return [...prev, enriched];
+        });
       })
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [group.id, loadMessages]);
+  }, [group.id, resolveName]);
 
+  // Auto-scroll to bottom when messages update
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -62,7 +91,21 @@ function ChatWindow({ group, userId }) {
     if (!text.trim()) return;
     const content = text;
     setText('');
-    await sendGroupMessage(group.id, userId, content);
+    // Optimistic update — show your own message instantly
+    const optimistic = {
+      id: `opt-${Date.now()}`,
+      group_id: group.id,
+      user_id: userId,
+      content,
+      created_at: new Date().toISOString(),
+      user: { id: userId, name: nameCache[userId] || 'You' }
+    };
+    setMessages(prev => [...prev, optimistic]);
+    const { data } = await sendGroupMessage(group.id, userId, content);
+    // Replace optimistic with real message from server
+    if (data) {
+      setMessages(prev => prev.map(m => m.id === optimistic.id ? { ...data, user: optimistic.user } : m));
+    }
   };
 
   return (
@@ -73,7 +116,7 @@ function ChatWindow({ group, userId }) {
         </div>
         <div>
           <h4 style={{ margin: 0 }}>{group.name}</h4>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Group Chat</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Live Group Chat</span>
         </div>
       </div>
 
@@ -87,12 +130,9 @@ function ChatWindow({ group, userId }) {
           </div>
         ) : (
           messages.map((m) => (
-            <div key={m.id} style={{
-              alignSelf: m.user_id === userId ? 'flex-end' : 'flex-start',
-              maxWidth: '85%',
-            }}>
+            <div key={m.id} style={{ alignSelf: m.user_id === userId ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, marginLeft: m.user_id === userId ? 0 : 4, textAlign: m.user_id === userId ? 'right' : 'left' }}>
-                {m.user?.name || 'User'} • {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {m.user?.name || nameCache[m.user_id] || 'User'} • {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </div>
               <div style={{
                 padding: '8px 12px',
@@ -110,12 +150,12 @@ function ChatWindow({ group, userId }) {
       </div>
 
       <form onSubmit={send} style={{ padding: '12px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
-        <input 
-          type="text" 
-          className="form-input" 
-          placeholder="Type a message..." 
-          value={text} 
-          onChange={e => setText(e.target.value)} 
+        <input
+          type="text"
+          className="form-input"
+          placeholder="Type a message..."
+          value={text}
+          onChange={e => setText(e.target.value)}
           style={{ flex: 1, background: 'var(--surface-2)' }}
         />
         <button type="submit" className="btn btn-primary" disabled={!text.trim()}>
